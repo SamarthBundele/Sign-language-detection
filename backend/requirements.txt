@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+Pillow
+tensorflow
+opencv-python
+numpy
+scikit-learn
+# For LabelEncoder and other sklearn utilities if used
