@@ -50,5 +50,5 @@ This project captures real-time webcam input, detects hand landmarks using **Med
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/sign-language-detection.git
+git clone https://github.com/SamarthBundele/Sign-language-detection#
 cd sign-language-detection
