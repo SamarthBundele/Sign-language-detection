@@ -4,6 +4,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { AlertCircle, Camera, CameraOff, Hand } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import DetectedSign from "./DetectedSign";
+import * as mpHands from "@mediapipe/hands";
+import * as drawingUtils from "@mediapipe/drawing_utils";
 
 interface Landmark {
   x: number;
@@ -11,19 +13,17 @@ interface Landmark {
   z?: number;
 }
 
-// Standard MediaPipe Hand connections (adjust if your model's landmarks are different)
 const HAND_CONNECTIONS: [number, number][] = [
-  [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
-  [0, 5], [5, 6], [6, 7], [7, 8], // Index finger
-  [0, 9], [9, 10], [10, 11], [11, 12], // Middle finger
-  [0, 13], [13, 14], [14, 15], [15, 16], // Ring finger
-  [0, 17], [17, 18], [18, 19], [19, 20], // Pinky
-  [5, 9], [9, 13], [13, 17] // Palm
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17]
 ];
 
 const SignDetection = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const [isDetecting, setIsDetecting] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
@@ -32,10 +32,7 @@ const SignDetection = () => {
   const [handLandmarks, setHandLandmarks] = useState<Landmark[] | null>(null);
   const { toast } = useToast();
 
-  const detectedSignRef = useRef<string | null>(null);
-  const handLandmarksRef = useRef<Landmark[] | null>(null);
-
-  const getRandomConfidence = () => Math.floor(Math.random() * 40) + 60;
+  const handsRef = useRef<mpHands.Hands | null>(null);
 
   const startCamera = async () => {
     try {
@@ -65,80 +62,64 @@ const SignDetection = () => {
       const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
       tracks.forEach((track) => track.stop());
       videoRef.current.srcObject = null;
-      setCameraActive(false);
-      setIsDetecting(false);
-      setDetectedSign(null);
     }
+    setCameraActive(false);
+    setIsDetecting(false);
+    setDetectedSign(null);
+    setHandLandmarks(null);
+    clearOverlay();
   };
 
-  const sendFrameToBackend = async (currentLandmarks: Landmark[] | null) => {
-    let flattenedLandmarks: number[] = [];
-    if (currentLandmarks && currentLandmarks.length === 21) {
-      flattenedLandmarks = currentLandmarks.reduce((acc, lm) => {
-        acc.push(lm.x, lm.y, lm.z || 0); // Ensure z is 0 if undefined
-        return acc;
-      }, [] as number[]);
-    } else {
-      // Send dummy data if landmarks are not valid to pass backend validation
-      // This should be replaced with actual client-side landmark detection
-      console.warn("No valid client-side landmarks (21) found, sending dummy data.");
-      flattenedLandmarks = Array(63).fill(0.0);
-    }
-
-    const res = await fetch("http://localhost:5000/predict", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ landmarks: flattenedLandmarks }),
-    });
-    // Backend now only returns { prediction: string, confidence: float, error?: string }
-    const data = await res.json();
-    return data;
+  const clearOverlay = () => {
+    const container = overlayRef.current;
+    if (!container) return;
+    const elements = container.querySelectorAll(".hand-marker, .finger-connection");
+    elements.forEach((el) => el.remove());
   };
 
-  const processFrame = async () => {
-    if (!canvasRef.current || !videoRef.current) return;
-    const ctx = canvasRef.current.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(videoRef.current, 0, 0, 640, 480);
-    // Client-side landmark detection should happen here before sending to backend
-    // For now, we use handLandmarksRef.current which is likely null or stale
-    // until proper MediaPipe integration.
-
-    // The handLandmarksRef.current are used for drawing, but they are currently
-    // set by the backend's response in the old code. This needs to change.
-    // For now, to make the call, we pass what we have.
-    // A proper implementation would get fresh landmarks here.
-    const landmarksToProcess = handLandmarksRef.current;
+  const sendFrameToBackend = async (landmarks: Landmark[]) => {
+    const flattenedLandmarks = landmarks.reduce((acc, lm) => {
+      acc.push(lm.x, lm.y, lm.z || 0);
+      return acc;
+    }, [] as number[]);
 
     try {
-      // Pass current (potentially null/stale) landmarks
-      const data = await sendFrameToBackend(landmarksToProcess);
-      if (data && data.prediction) {
-        setDetectedSign(data.prediction);
-        // setHandLandmarks(data.landmarks || null); // Backend no longer sends landmarks
-        // Landmarks for drawing should come from a client-side MediaPipe solution
-        // If landmarksToProcess was null/stale, the drawing might be off or absent.
-        // If using dummy data, setHandLandmarks to null or an empty array to clear drawing.
-        if (!landmarksToProcess || landmarksToProcess.length !== 21) {
-            setHandLandmarks(null); // Clear drawn landmarks if we sent dummy data
-        }
-        // Confidence should come from backend if available, else use random
-        setDetectionConfidence(data.confidence !== undefined ? data.confidence * 100 : getRandomConfidence());
-      } else if (data && data.error) {
-        console.error("Backend prediction error:", data.error);
-        setDetectedSign(null);
-        setHandLandmarks(null);
-        toast({
-          title: "Prediction Error",
-          description: data.error,
-          variant: "destructive",
-        });
+      const res = await fetch("http://localhost:5000/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ landmarks: flattenedLandmarks }),
+      });
+      const data = await res.json();
+      return data;
+    } catch (err) {
+      console.error("Backend error:", err);
+      toast({
+        title: "Prediction Error",
+        description: "Failed to contact backend.",
+        variant: "destructive",
+      });
+      return null;
+    }
+  };
+
+  const handleResults = async (results: mpHands.Results) => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      const landmarks = results.multiHandLandmarks[0].map((lm) => ({
+        x: lm.x,
+        y: lm.y,
+        z: lm.z,
+      }));
+      setHandLandmarks(landmarks);
+
+      const prediction = await sendFrameToBackend(landmarks);
+      if (prediction) {
+        setDetectedSign(prediction.prediction || null);
+        setDetectionConfidence(prediction.confidence ? prediction.confidence * 100 : 0);
       }
-    } catch (error) {
-      console.error("Error processing frame:", error);
-      // Optionally, clear landmarks on error
-      // setHandLandmarks(null);
+    } else {
+      setHandLandmarks(null);
+      setDetectedSign(null);
+      clearOverlay();
     }
   };
 
@@ -159,99 +140,81 @@ const SignDetection = () => {
   };
 
   useEffect(() => {
-    detectedSignRef.current = detectedSign;
-  }, [detectedSign]);
+    if (isDetecting && !handsRef.current) {
+      const hands = new mpHands.Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+      });
+      hands.setOptions({
+        maxNumHands: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.5,
+      });
+      hands.onResults(handleResults);
+      handsRef.current = hands;
+
+      const camera = new mpHands.Camera(videoRef.current!, {
+        onFrame: async () => {
+          await hands.send({ image: videoRef.current! });
+        },
+        width: 640,
+        height: 480,
+      });
+      camera.start();
+    }
+  }, [isDetecting]);
 
   useEffect(() => {
-    handLandmarksRef.current = handLandmarks;
+    if (!overlayRef.current || !handLandmarks) return;
+    const container = overlayRef.current;
+    clearOverlay();
+
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+
+    // Draw landmarks
+    handLandmarks.forEach((lm) => {
+      const marker = document.createElement("div");
+      marker.className = "hand-marker";
+      marker.style.position = "absolute";
+      marker.style.left = `${lm.x * containerWidth - 5}px`;
+      marker.style.top = `${lm.y * containerHeight - 5}px`;
+      marker.style.width = "10px";
+      marker.style.height = "10px";
+      marker.style.backgroundColor = "rgba(0, 255, 0, 0.7)";
+      marker.style.borderRadius = "50%";
+      marker.style.zIndex = "10";
+      container.appendChild(marker);
+    });
+
+    // Draw connections
+    HAND_CONNECTIONS.forEach(([startIdx, endIdx]) => {
+      const start = handLandmarks[startIdx];
+      const end = handLandmarks[endIdx];
+
+      const line = document.createElement("div");
+      line.className = "finger-connection";
+      line.style.position = "absolute";
+
+      const x1 = start.x * containerWidth;
+      const y1 = start.y * containerHeight;
+      const x2 = end.x * containerWidth;
+      const y2 = end.y * containerHeight;
+
+      const length = Math.hypot(x2 - x1, y2 - y1);
+      const angle = Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
+
+      line.style.width = `${length}px`;
+      line.style.height = "2px";
+      line.style.backgroundColor = "rgba(255, 255, 255, 0.7)";
+      line.style.left = `${x1}px`;
+      line.style.top = `${y1}px`;
+      line.style.transformOrigin = "0 50%";
+      line.style.transform = `rotate(${angle}deg)`;
+      line.style.zIndex = "9";
+
+      container.appendChild(line);
+    });
   }, [handLandmarks]);
-
-  useEffect(() => {
-    if (!isDetecting) return;
-    const interval = setInterval(() => {
-      processFrame();
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [isDetecting]);
-
-  useEffect(() => {
-    if (!isDetecting || !overlayRef.current) return;
-
-    const addHandMarkers = () => {
-      if (!overlayRef.current) return;
-      const container = overlayRef.current;
-      const currentLandmarks = handLandmarksRef.current;
-
-      // Clear existing markers and connections
-      const existingElements = container.querySelectorAll(".hand-marker, .finger-connection");
-      existingElements.forEach((el) => el.remove());
-
-      if (currentLandmarks && currentLandmarks.length > 0) {
-        const containerWidth = container.clientWidth;
-        const containerHeight = container.clientHeight;
-
-        // Draw landmarks
-        currentLandmarks.forEach((landmark) => {
-          const marker = document.createElement("div");
-          marker.className = "hand-marker"; // Apply your CSS class for styling
-          marker.style.position = "absolute";
-          // Adjust -5 to center the marker if it's 10px wide/high
-          marker.style.left = `${landmark.x * containerWidth - 5}px`;
-          marker.style.top = `${landmark.y * containerHeight - 5}px`;
-          
-          // Default styling if no CSS class is sufficient
-          if (!marker.style.width) marker.style.width = "10px";
-          if (!marker.style.height) marker.style.height = "10px";
-          if (!marker.style.backgroundColor) marker.style.backgroundColor = "rgba(0, 255, 0, 0.7)"; // Green dot
-          if (!marker.style.borderRadius) marker.style.borderRadius = "50%";
-          marker.style.zIndex = "10"; // Ensure markers are on top
-
-          container.appendChild(marker);
-        });
-
-        // Draw connections
-        HAND_CONNECTIONS.forEach(([startIdx, endIdx]) => {
-          const startLandmark = currentLandmarks[startIdx];
-          const endLandmark = currentLandmarks[endIdx];
-
-          if (startLandmark && endLandmark) {
-            const line = document.createElement("div");
-            line.className = "finger-connection"; // Apply your CSS class for styling
-            line.style.position = "absolute";
-            
-            const x1 = startLandmark.x * containerWidth;
-            const y1 = startLandmark.y * containerHeight;
-            const x2 = endLandmark.x * containerWidth;
-            const y2 = endLandmark.y * containerHeight;
-
-            const length = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-            const angle = Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
-
-            // Default styling if no CSS class is sufficient
-            if (!line.style.height) line.style.height = "2px";
-            if (!line.style.backgroundColor) line.style.backgroundColor = "rgba(255, 255, 255, 0.7)"; // White line
-            line.style.zIndex = "9";
-
-            line.style.width = `${length}px`;
-            line.style.left = `${x1}px`;
-            line.style.top = `${y1 - parseFloat(line.style.height) / 2}px`; // Center line vertically
-            line.style.transformOrigin = "0 50%";
-            line.style.transform = `rotate(${angle}deg)`;
-            
-            container.appendChild(line);
-          }
-        });
-      }
-    };
-
-    const markerInterval = setInterval(addHandMarkers, 100); // Faster updates for smoother landmarks
-
-    return () => {
-      clearInterval(markerInterval);
-      const markers = overlayRef.current?.querySelectorAll(".hand-marker, .finger-connection");
-      markers?.forEach((marker) => marker.remove());
-    };
-  }, [isDetecting]);
 
   return (
     <div className="w-full max-w-4xl mx-auto">
@@ -280,7 +243,6 @@ const SignDetection = () => {
                   </div>
                 )}
               </div>
-              <canvas ref={canvasRef} width={640} height={480} className="hidden" />
               <div className="flex justify-between mt-4">
                 <Button
                   variant="outline"
