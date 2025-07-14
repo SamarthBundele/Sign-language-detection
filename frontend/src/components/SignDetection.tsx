@@ -4,217 +4,93 @@ import { Card, CardContent } from "@/components/ui/card";
 import { AlertCircle, Camera, CameraOff, Hand } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import DetectedSign from "./DetectedSign";
-import * as mpHands from "@mediapipe/hands";
-import * as drawingUtils from "@mediapipe/drawing_utils";
-
-interface Landmark {
-  x: number;
-  y: number;
-  z?: number;
-}
-
-const HAND_CONNECTIONS: [number, number][] = [
-  [0, 1], [1, 2], [2, 3], [3, 4],
-  [0, 5], [5, 6], [6, 7], [7, 8],
-  [0, 9], [9, 10], [10, 11], [11, 12],
-  [0, 13], [13, 14], [14, 15], [15, 16],
-  [0, 17], [17, 18], [18, 19], [19, 20],
-  [5, 9], [9, 13], [13, 17]
-];
 
 const SignDetection = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
-  const [isDetecting, setIsDetecting] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
   const [detectedSign, setDetectedSign] = useState<string | null>(null);
-  const [detectionConfidence, setDetectionConfidence] = useState(0);
-  const [handLandmarks, setHandLandmarks] = useState<Landmark[] | null>(null);
   const { toast } = useToast();
-
-  const handsRef = useRef<mpHands.Hands | null>(null);
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: 640, height: 480 },
-      });
+      // Assuming backend streams video at http://localhost:5000/video_feed
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+        videoRef.current.src = "http://localhost:5000/video_feed";
+        videoRef.current.play();
         setCameraActive(true);
         toast({
           title: "Camera activated",
-          description: "Position your hand in the frame to begin detection.",
+          description: "Live video feed from backend started.",
         });
       }
-    } catch (error) {
-      console.error("Error accessing camera:", error);
+    } catch (err) {
+      console.error("Error starting video stream:", err);
       toast({
-        title: "Camera access error",
-        description: "Unable to access your camera. Please check permissions.",
+        title: "Video stream error",
+        description: "Unable to connect to backend video stream.",
         variant: "destructive",
       });
     }
   };
 
   const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach((track) => track.stop());
-      videoRef.current.srcObject = null;
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.src = "";
     }
     setCameraActive(false);
     setIsDetecting(false);
     setDetectedSign(null);
-    setHandLandmarks(null);
-    clearOverlay();
+    toast({
+      title: "Camera stopped",
+      description: "Live video feed has been stopped.",
+    });
   };
 
-  const clearOverlay = () => {
-    const container = overlayRef.current;
-    if (!container) return;
-    const elements = container.querySelectorAll(".hand-marker, .finger-connection");
-    elements.forEach((el) => el.remove());
-  };
-
-  const sendFrameToBackend = async (landmarks: Landmark[]) => {
-    const flattenedLandmarks = landmarks.reduce((acc, lm) => {
-      acc.push(lm.x, lm.y, lm.z || 0);
-      return acc;
-    }, [] as number[]);
-
-    try {
-      const res = await fetch("http://localhost:5000/predict", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ landmarks: flattenedLandmarks }),
-      });
-      const data = await res.json();
-      return data;
-    } catch (err) {
-      console.error("Backend error:", err);
+  const toggleDetection = async () => {
+    if (!cameraActive) {
       toast({
-        title: "Prediction Error",
-        description: "Failed to contact backend.",
+        title: "Camera not active",
+        description: "Please start the camera first.",
         variant: "destructive",
       });
-      return null;
-    }
-  };
-
-  const handleResults = async (results: mpHands.Results) => {
-    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-      const landmarks = results.multiHandLandmarks[0].map((lm) => ({
-        x: lm.x,
-        y: lm.y,
-        z: lm.z,
-      }));
-      setHandLandmarks(landmarks);
-
-      const prediction = await sendFrameToBackend(landmarks);
-      if (prediction) {
-        setDetectedSign(prediction.prediction || null);
-        setDetectionConfidence(prediction.confidence ? prediction.confidence * 100 : 0);
-      }
-    } else {
-      setHandLandmarks(null);
-      setDetectedSign(null);
-      clearOverlay();
-    }
-  };
-
-  const toggleDetection = () => {
-    if (!cameraActive) {
-      startCamera();
       return;
     }
-    setIsDetecting((prev) => {
-      if (!prev) {
+
+    try {
+      const response = await fetch("http://localhost:5000/toggle_detection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ detect: !isDetecting }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setIsDetecting(!isDetecting);
         toast({
-          title: "Detection started",
-          description: "Analyzing hand gestures...",
+          title: isDetecting ? "Detection stopped" : "Detection started",
+          description: data.message,
+        });
+        if (data.prediction) {
+          setDetectedSign(data.prediction);
+        }
+      } else {
+        toast({
+          title: "Backend error",
+          description: "Failed to toggle detection.",
+          variant: "destructive",
         });
       }
-      return !prev;
-    });
-  };
-
-  useEffect(() => {
-    if (isDetecting && !handsRef.current) {
-      const hands = new mpHands.Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+    } catch (err) {
+      console.error("Error toggling detection:", err);
+      toast({
+        title: "Detection toggle error",
+        description: "Could not communicate with backend.",
+        variant: "destructive",
       });
-      hands.setOptions({
-        maxNumHands: 1,
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.5,
-      });
-      hands.onResults(handleResults);
-      handsRef.current = hands;
-
-      const camera = new mpHands.Camera(videoRef.current!, {
-        onFrame: async () => {
-          await hands.send({ image: videoRef.current! });
-        },
-        width: 640,
-        height: 480,
-      });
-      camera.start();
     }
-  }, [isDetecting]);
-
-  useEffect(() => {
-    if (!overlayRef.current || !handLandmarks) return;
-    const container = overlayRef.current;
-    clearOverlay();
-
-    const containerWidth = container.clientWidth;
-    const containerHeight = container.clientHeight;
-
-    // Draw landmarks
-    handLandmarks.forEach((lm) => {
-      const marker = document.createElement("div");
-      marker.className = "hand-marker";
-      marker.style.position = "absolute";
-      marker.style.left = `${lm.x * containerWidth - 5}px`;
-      marker.style.top = `${lm.y * containerHeight - 5}px`;
-      marker.style.width = "10px";
-      marker.style.height = "10px";
-      marker.style.backgroundColor = "rgba(0, 255, 0, 0.7)";
-      marker.style.borderRadius = "50%";
-      marker.style.zIndex = "10";
-      container.appendChild(marker);
-    });
-
-    // Draw connections
-    HAND_CONNECTIONS.forEach(([startIdx, endIdx]) => {
-      const start = handLandmarks[startIdx];
-      const end = handLandmarks[endIdx];
-
-      const line = document.createElement("div");
-      line.className = "finger-connection";
-      line.style.position = "absolute";
-
-      const x1 = start.x * containerWidth;
-      const y1 = start.y * containerHeight;
-      const x2 = end.x * containerWidth;
-      const y2 = end.y * containerHeight;
-
-      const length = Math.hypot(x2 - x1, y2 - y1);
-      const angle = Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
-
-      line.style.width = `${length}px`;
-      line.style.height = "2px";
-      line.style.backgroundColor = "rgba(255, 255, 255, 0.7)";
-      line.style.left = `${x1}px`;
-      line.style.top = `${y1}px`;
-      line.style.transformOrigin = "0 50%";
-      line.style.transform = `rotate(${angle}deg)`;
-      line.style.zIndex = "9";
-
-      container.appendChild(line);
-    });
-  }, [handLandmarks]);
+  };
 
   return (
     <div className="w-full max-w-4xl mx-auto">
@@ -230,7 +106,6 @@ const SignDetection = () => {
                   muted
                   className="w-full h-full object-cover"
                 />
-                <div ref={overlayRef} className="video-overlay" />
                 {!cameraActive && (
                   <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-70">
                     <div className="text-center text-white">
@@ -266,32 +141,25 @@ const SignDetection = () => {
                 <Hand className="mr-2" size={24} />
                 Sign Detection
               </h2>
-              <div className="mb-6">
-                <h3 className="text-sm font-medium text-gray-500 mb-1">DETECTED SIGN</h3>
-                <DetectedSign
-                  signName={detectedSign}
-                  confidence={detectionConfidence}
-                  isDetecting={isDetecting}
-                />
-              </div>
-              <div>
+              <DetectedSign
+                signName={detectedSign}
+                confidence={isDetecting ? "Processing..." : ""}
+                isDetecting={isDetecting}
+              />
+              <div className="mt-6">
                 <h3 className="text-sm font-medium text-gray-500 mb-2">INSTRUCTIONS</h3>
                 <ul className="space-y-2 text-gray-700">
                   <li className="flex items-start">
                     <span className="bg-primary/10 text-primary font-medium rounded-full w-5 h-5 flex items-center justify-center mr-2 mt-0.5">1</span>
-                    Position your hand clearly in the camera frame
+                    Start the camera to view live video from backend
                   </li>
                   <li className="flex items-start">
                     <span className="bg-primary/10 text-primary font-medium rounded-full w-5 h-5 flex items-center justify-center mr-2 mt-0.5">2</span>
-                    Make sure there is good lighting on your hand
+                    Click "Start Detection" to let backend analyze frames
                   </li>
                   <li className="flex items-start">
                     <span className="bg-primary/10 text-primary font-medium rounded-full w-5 h-5 flex items-center justify-center mr-2 mt-0.5">3</span>
-                    Hold each sign for 1–2 seconds for better recognition
-                  </li>
-                  <li className="flex items-start">
-                    <span className="bg-primary/10 text-primary font-medium rounded-full w-5 h-5 flex items-center justify-center mr-2 mt-0.5">4</span>
-                    For best results, avoid rapid movements
+                    Prediction will be overlaid directly on the video
                   </li>
                 </ul>
               </div>
