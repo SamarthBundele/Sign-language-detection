@@ -1,14 +1,16 @@
 import numpy as np
 import tensorflow as tf
 import pickle
+import cv2
 from fastapi import FastAPI, HTTPException, Request as FastAPIRequest
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from typing import List
 
 # --- Configuration ---
 MODEL_PATH = "gesture_landmark_model.h5"  # Model expects 63 landmark features
-LABEL_ENCODER_PATH = "label_encoder.pkl" # Saved from training/training.py
+LABEL_ENCODER_PATH = "label_encoder.pkl"  # Saved from training
 
 # --- Load Model and Label Encoder ---
 try:
@@ -27,82 +29,158 @@ except Exception as e:
     label_encoder = None
 
 # --- FastAPI App Initialization ---
-app = FastAPI(title="Sign Language Landmark-Based Detection API")
+app = FastAPI(title="Sign Language Detection API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to your frontend's domain
+    allow_origins=["*"],  # In production, restrict to your frontend's domain
     allow_credentials=True,
-    allow_methods=["POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- Global Camera Variables ---
+camera = cv2.VideoCapture(0)  # Open default webcam
+detecting = False            # Toggle detection ON/OFF
+
+
 # --- Request and Response Models ---
 class LandmarkRequest(BaseModel):
-    landmarks: List[float]  # Expecting a flat list of 63 landmark features
+    landmarks: List[float]  # Flat list of 63 features
 
 class PredictionResponse(BaseModel):
     prediction: str | None
     confidence: float | None
     error: str | None = None
 
-# --- API Endpoint ---
+class ToggleRequest(BaseModel):
+    detect: bool
+
+
+# --- Helper Functions ---
+def predict_from_landmarks(landmarks: List[float]):
+    """
+    Run prediction on landmark features and return label + confidence
+    """
+    if model is None or label_encoder is None:
+        return None, None
+
+    try:
+        landmark_array = np.array(landmarks).reshape(1, 63)
+        raw_model_output = model.predict(landmark_array, verbose=0)
+        classification_probs = raw_model_output[0]
+        predicted_index = np.argmax(classification_probs)
+        confidence = float(classification_probs[predicted_index])
+        predicted_label = label_encoder.inverse_transform([predicted_index])[0]
+        return predicted_label, confidence
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return None, None
+
+
+def process_frame(frame):
+    """
+    Process video frame: draw landmarks + prediction if detection is active
+    """
+    frame = cv2.resize(frame, (640, 480))
+
+    if detecting:
+        # --- Your landmark detection logic here ---
+        # For demo, we use placeholder random landmarks
+        fake_landmarks = np.random.rand(63).tolist()
+
+        predicted_label, confidence = predict_from_landmarks(fake_landmarks)
+
+        # Draw prediction on frame
+        text = f"{predicted_label} ({confidence*100:.1f}%)" if predicted_label else "No Hand Detected"
+        color = (0, 255, 0) if predicted_label else (0, 0, 255)
+        cv2.putText(frame, text, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+    else:
+        cv2.putText(frame, "Detection Paused", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+    return frame
+
+
+def generate_frames():
+    """
+    Continuously capture frames from webcam and yield as MJPEG stream
+    """
+    while True:
+        success, frame = camera.read()
+        if not success:
+            break
+
+        frame = process_frame(frame)
+
+        ret, buffer = cv2.imencode('.jpg', frame)
+        if not ret:
+            continue
+        frame_bytes = buffer.tobytes()
+
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+
+# --- API Endpoints ---
+
+@app.get("/video_feed")
+def video_feed():
+    """
+    Streams live video with landmarks and prediction
+    """
+    return StreamingResponse(generate_frames(),
+                             media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.post("/toggle_detection")
+def toggle_detection(toggle: ToggleRequest):
+    """
+    Toggle detection ON/OFF
+    """
+    global detecting
+    detecting = toggle.detect
+    state = "started" if detecting else "stopped"
+    print(f"Detection {state}.")
+    return {"success": True, "message": f"Detection {state}."}
+
+
 @app.post("/predict", response_model=PredictionResponse)
-async def predict_landmarks(fastapi_request: FastAPIRequest): # Changed parameter
+async def predict_landmarks(fastapi_request: FastAPIRequest):
+    """
+    Predict sign from landmarks POSTed by frontend
+    """
     try:
         body = await fastapi_request.json()
-        print(f"Received raw request body (attempt 2): {body}") # Log the raw body
+        print(f"Received raw request body: {body}")
     except Exception as e:
-        print(f"Error reading or parsing JSON body (attempt 2): {e}")
+        print(f"Error reading JSON body: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
     try:
         request_data = LandmarkRequest(**body)
-    except ValidationError as e: # Catch Pydantic's ValidationError specifically
-        print(f"Pydantic validation failed (attempt 2): {e.errors()}") # Log detailed errors
+    except ValidationError as e:
+        print(f"Pydantic validation failed: {e.errors()}")
         raise HTTPException(status_code=422, detail=f"Validation error: {e.errors()}")
-    except Exception as e:
-        print(f"Some other error during Pydantic validation (attempt 2): {e}")
-        raise HTTPException(status_code=422, detail=f"Unexpected validation error: {str(e)}")
 
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded. Server is not ready.")
-    if label_encoder is None:
-        raise HTTPException(status_code=503, detail="Label encoder not loaded. Server is not ready.")
+    if model is None or label_encoder is None:
+        raise HTTPException(status_code=503, detail="Model or Label Encoder not loaded.")
 
-    if len(request_data.landmarks) != 63: # Use request_data
+    if len(request_data.landmarks) != 63:
         return PredictionResponse(
             prediction=None,
             confidence=None,
-            error=f"Invalid input: Expected 63 landmark features, got {len(request_data.landmarks)}."
+            error=f"Expected 63 landmark features, got {len(request_data.landmarks)}."
         )
 
-    try:
-        # Prepare landmarks for the model (needs to be a NumPy array with batch dimension)
-        landmark_array = np.array(request_data.landmarks).reshape(1, 63) # (1 sample, 63 features) # Use request_data
+    predicted_label, confidence = predict_from_landmarks(request_data.landmarks)
 
-        # Get model prediction (probabilities for each class)
-        raw_model_output = model.predict(landmark_array)
-        
-        # Process classification output
-        classification_probs = raw_model_output[0]  # Output for the first (and only) sample
-        predicted_index = np.argmax(classification_probs)
-        confidence = float(classification_probs[predicted_index])
-        
-        # Decode the predicted index to the actual label string
-        predicted_label = label_encoder.inverse_transform([predicted_index])[0]
-        
-        return PredictionResponse(
-            prediction=predicted_label,
-            confidence=confidence
-        )
-    except Exception as e:
-        print(f"Prediction endpoint error: {e}")
-        # import traceback
-        # traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error during prediction: {e}")
+    if predicted_label is None:
+        return PredictionResponse(prediction=None, confidence=None, error="Prediction failed.")
 
-# --- To run this application (from the directory containing this file): ---
+    return PredictionResponse(prediction=predicted_label, confidence=confidence)
+
+
+# --- To run this app ---
 # uvicorn app:app --reload --host 0.0.0.0 --port 5000
-# Ensure 'gesture_landmark_model.h5' and 'label_encoder.pkl' are in the same directory
-# or paths are correctly updated.
