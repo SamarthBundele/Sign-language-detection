@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "frontend/next.config.js", "use": "@vercel/next" },
+    { "src": "api/predict.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/predict.py" },
+    { "src": "/(.*)", "dest": "/frontend/$1" }
+  ]
+}

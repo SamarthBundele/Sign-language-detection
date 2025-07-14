@@ -1,0 +1,5 @@
+fastapi
+pydantic
+tensorflow
+numpy
+pickle-mixin
