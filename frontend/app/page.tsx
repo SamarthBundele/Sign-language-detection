@@ -3,58 +3,44 @@
 import Image from "next/image";
 import styles from "./page.module.css";
 import React, { useRef, useEffect, useState } from "react";
-import { Hands } from "@mediapipe/hands";
-import { Camera } from "@mediapipe/camera_utils";
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [prediction, setPrediction] = useState<string>("");
   const [confidence, setConfidence] = useState<number | null>(null);
   const [processing, setProcessing] = useState<boolean>(false);
 
   useEffect(() => {
-    let camera: Camera | null = null;
-    if (videoRef.current) {
-      const hands = new Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-      });
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.7,
-      });
-      hands.onResults(async (results) => {
-        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-          setProcessing(true);
-          const landmarks = results.multiHandLandmarks[0]
-            .map((lm) => [lm.x, lm.y, lm.z])
-            .flat(); // 21 landmarks * 3 = 63
-          // Send to backend
-          const res = await fetch("/api/predict", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ landmarks }),
-          });
-          const data = await res.json();
-          setPrediction(data.label);
-          setConfidence(data.confidence);
-          setProcessing(false);
-        }
-      });
-      camera = new Camera(videoRef.current, {
-        onFrame: async () => {
-          await hands.send({ image: videoRef.current! });
-        },
-        width: 400,
-        height: 300,
-      });
-      camera.start();
-    }
-    return () => {
-      if (camera) camera.stop();
-    };
+    navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    });
   }, []);
+
+  const captureAndSendFrame = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg");
+    const base64 = dataUrl.split(",")[1];
+    setProcessing(true);
+    const res = await fetch("/api/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_base64: base64 }),
+    });
+    const data = await res.json();
+    setPrediction(data.label);
+    setConfidence(data.confidence);
+    setProcessing(false);
+  };
 
   return (
     <div className={styles.page}>
@@ -108,6 +94,10 @@ export default function Home() {
           height={300}
           style={{ border: "1px solid #ccc" }}
         />
+        <canvas ref={canvasRef} style={{ display: "none" }} />
+        <button onClick={captureAndSendFrame} style={{ marginTop: 20 }}>
+          Detect Hand Sign
+        </button>
         {processing && <p>Detecting...</p>}
         {prediction && (
           <div style={{ marginTop: 20 }}>
@@ -116,7 +106,7 @@ export default function Home() {
           </div>
         )}
         <p style={{ marginTop: 40, color: "#888" }}>
-          (Show your hand to the camera for real-time detection)
+          (Click the button to capture and predict from webcam frame)
         </p>
       </main>
       <footer className={styles.footer}>
