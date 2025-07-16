@@ -7,9 +7,9 @@ import os
 
 app = FastAPI()
 
-# Load model and label encoder
-MODEL_PATH = os.path.join(os.path.dirname(__file__), '../training/gesture_landmark_model01.h5')
-ENCODER_PATH = os.path.join(os.path.dirname(__file__), '../training/label_encoder.pkl')
+# Use absolute paths for Vercel deployment
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'gesture_landmark_model01.h5')
+ENCODER_PATH = os.path.join(os.path.dirname(__file__), 'label_encoder.pkl')
 
 model = load_model(MODEL_PATH)
 with open(ENCODER_PATH, 'rb') as f:
