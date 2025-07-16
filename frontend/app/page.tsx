@@ -31,7 +31,7 @@ export default function Home() {
     const dataUrl = canvas.toDataURL("image/jpeg");
     const base64 = dataUrl.split(",")[1];
     setProcessing(true);
-    const res = await fetch("/api/predict", {
+    const res = await fetch("https://sign-language-detection-lzfl.vercel.app/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ image_base64: base64 }),

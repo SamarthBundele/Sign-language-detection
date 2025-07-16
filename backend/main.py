@@ -1,5 +1,6 @@
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from tensorflow.keras.models import load_model
 import pickle
@@ -9,6 +10,15 @@ import io
 import base64
 
 app = FastAPI()
+
+# Allow CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://sign-language-detection-zeta.vercel.app"],
+    allow_credentials=True,
+    allow_methods=["*"] ,
+    allow_headers=["*"]
+)
 
 # Use absolute paths for Vercel deployment
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'gesture_landmark_model01.h5')
