@@ -14,7 +14,7 @@ app = FastAPI()
 # Allow CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://sign-language-detection-zeta.vercel.app"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"] ,
     allow_headers=["*"]
